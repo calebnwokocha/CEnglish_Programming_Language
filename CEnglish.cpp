@@ -31,9 +31,6 @@
 #include <variant>
 #include <vector>
 
-// INSERT AT THE TOP OF THE FILE:
-// replace #include <filesystem> and remove "namespace fs = std::filesystem;"
-
 namespace fs {
     class path {
         public:
