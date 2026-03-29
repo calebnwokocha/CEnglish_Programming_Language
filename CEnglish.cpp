@@ -906,10 +906,10 @@ namespace CEnglish {
             tok.param_names = split_ws(trim(line));
             std::cout << "Description: ";
             std::getline(std::cin, tok.description);
-            std::cout << "Body tokens (end with a single . on a line):\n";
+            std::cout << "Definition tokens (end with only QED on a line):\n";
             while (true) {
                 std::getline(std::cin, line);
-                if (trim(line) == ".") break;
+                if (trim(line) == "QED") break;
                 auto row = split_ws(line);
                 tok.body_tokens.insert(tok.body_tokens.end(), row.begin(), row.end());
             }
