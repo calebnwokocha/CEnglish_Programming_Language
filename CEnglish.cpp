@@ -1008,45 +1008,226 @@ namespace CEnglish {
         }
 
         void execute_tokens(const std::vector<std::string>& toks, const std::string& source_name) {
-            for (std::size_t i = 0; i < toks.size();) {
-                const std::string& tok = toks[i];
-                if (tok.empty()) { ++i; continue; }
+            struct PendingCall {
+                std::string token;
+                bool builtin{false};
+                std::size_t arity{0};
+                std::vector<std::string> param_names;
+                std::vector<std::string> args;
+            };
 
-                if (const TokenSpec* spec = find_spec(tok)) {
-                    std::vector<std::string> args;
-                    const std::size_t needed = spec->arity;
-                    for (std::size_t j = 0; j < needed; ++j) {
-                        if (i + 1 + j < toks.size()) args.push_back(toks[i + 1 + j]);
-                        else args.push_back(prompt_for_parameter(tok, spec->param_names, j));
+            auto is_keytoken = [&](const std::string& s) -> bool {
+                return find_spec(s) != nullptr || find_custom(s) != nullptr;
+            };
+
+            auto collect_side = [&](std::size_t i, int dir, const std::vector<bool>& consumed) {
+                std::vector<std::size_t> idx;
+                if (dir < 0) {
+                    for (std::size_t j = i; j > 0;) {
+                        --j;
+                        if (consumed[j] || is_keytoken(toks[j])) break;
+                        idx.push_back(j);
                     }
-                    spec->handler(*this, args);
-                    i += 1 + needed;
-                    continue;
+                    std::reverse(idx.begin(), idx.end());
+                } else {
+                    for (std::size_t j = i + 1; j < toks.size(); ++j) {
+                        if (consumed[j] || is_keytoken(toks[j])) break;
+                        idx.push_back(j);
+                    }
+                }
+                return idx;
+            };
+
+            auto enumerate_combinations =
+                [&](auto&& self,
+                    const std::vector<std::size_t>& pool,
+                    std::size_t start,
+                    std::size_t need,
+                    std::vector<std::size_t>& current,
+                    std::vector<std::vector<std::size_t>>& out) -> void
+            {
+                if (need == 0) {
+                    out.push_back(current);
+                    return;
+                }
+                if (start >= pool.size()) {
+                    return;
                 }
 
-                if (const CustomToken* custom = find_custom(tok)) {
-                    std::vector<std::string> args;
-                    const std::size_t needed = custom->param_names.size();
-                    for (std::size_t j = 0; j < needed; ++j) {
-                        if (i + 1 + j < toks.size()) args.push_back(toks[i + 1 + j]);
-                        else args.push_back(prompt_for_parameter(tok, custom->param_names, j));
-                    }
-                    expand_and_execute_custom(*custom, args);
-                    i += 1 + needed;
-                    continue;
+                for (std::size_t i = start; i + need <= pool.size(); ++i) {
+                    current.push_back(pool[i]);
+                    self(self, pool, i + 1, need - 1, current, out);
+                    current.pop_back();
                 }
+            };
 
-                auto suggestions = suggest_tokens(tok);
+            auto format_option = [&](const std::string& token,
+                                     const std::vector<std::size_t>& indices,
+                                     const std::vector<std::string>& param_names) -> std::string
+            {
                 std::ostringstream oss;
-                oss << "unknown token '" << tok << "' in " << source_name;
+                oss << token << '(';
+                for (std::size_t k = 0; k < indices.size(); ++k) {
+                    if (k != 0) oss << ", ";
+                    if (k < param_names.size() && !param_names[k].empty()) {
+                        oss << param_names[k] << '=';
+                    }
+                    oss << toks[indices[k]];
+                }
+                oss << ')';
+                return oss.str();
+            };
+
+            auto choose_disambiguation = [&](const std::string& token,
+                                             const std::vector<std::vector<std::size_t>>& options,
+                                             const std::vector<std::string>& param_names) -> std::size_t
+            {
+                if (options.size() <= 1) return 0;
+
+                std::cout << "Ambiguous use of '" << token << "' in " << source_name << ".\n";
+                for (std::size_t i = 0; i < options.size(); ++i) {
+                    std::cout << (i + 1) << ") " << format_option(token, options[i], param_names) << '\n';
+                }
+
+                for (;;) {
+                    std::cout << "Choose 1-" << options.size() << ": ";
+                    std::string line;
+                    if (!std::getline(std::cin >> std::ws, line)) {
+                        throw std::runtime_error("input closed during disambiguation");
+                    }
+
+                    std::istringstream iss(line);
+                    std::size_t choice = 0;
+                    char extra = '\0';
+                    if ((iss >> choice) && choice >= 1 && choice <= options.size() && !(iss >> extra)) {
+                        return choice - 1;
+                    }
+
+                    std::cout << "Invalid choice.\n";
+                }
+            };
+
+            std::vector<bool> consumed(toks.size(), false);
+            std::vector<PendingCall> calls;
+            calls.reserve(toks.size());
+
+            for (std::size_t i = 0; i < toks.size(); ++i) {
+                if (consumed[i]) continue;
+
+                const std::string& tok = toks[i];
+                if (tok.empty()) continue;
+
+                const TokenSpec* spec = find_spec(tok);
+                const CustomToken* custom = spec ? nullptr : find_custom(tok);
+
+                if (!spec && !custom) continue;
+
+                PendingCall call;
+                call.token = tok;
+
+                if (spec) {
+                    call.builtin = true;
+                    call.arity = spec->arity;
+                    call.param_names = spec->param_names;
+                } else {
+                    call.builtin = false;
+                    call.arity = custom->param_names.size();
+                    call.param_names = custom->param_names;
+                }
+
+                std::vector<std::size_t> pool;
+                {
+                    const auto left = collect_side(i, -1, consumed);
+                    const auto right = collect_side(i, +1, consumed);
+                    pool.reserve(left.size() + right.size());
+                    pool.insert(pool.end(), left.begin(), left.end());
+                    pool.insert(pool.end(), right.begin(), right.end());
+                }
+
+                std::vector<std::size_t> selected;
+
+                if (call.arity == 0) {
+                    selected.clear();
+                } else if (pool.empty()) {
+                    selected.clear();
+                } else {
+                    const std::size_t take = std::min(call.arity, pool.size());
+
+                    std::vector<std::vector<std::size_t>> options;
+                    options.reserve(8);
+
+                    std::vector<std::size_t> current;
+                    current.reserve(take);
+                    enumerate_combinations(enumerate_combinations, pool, 0, take, current, options);
+
+                    if (options.empty()) {
+                        selected.clear();
+                    } else if (options.size() == 1) {
+                        selected = std::move(options.front());
+                    } else {
+                        const std::size_t choice = choose_disambiguation(call.token, options, call.param_names);
+                        selected = std::move(options[choice]);
+                    }
+                }
+
+                for (std::size_t idx : selected) {
+                    consumed[idx] = true;
+                }
+
+                call.args.reserve(selected.size());
+                for (std::size_t idx : selected) {
+                    call.args.push_back(toks[idx]);
+                }
+
+                calls.push_back(std::move(call));
+            }
+
+            for (std::size_t i = 0; i < toks.size(); ++i) {
+                if (consumed[i]) continue;
+                if (is_keytoken(toks[i])) continue;
+
+                auto suggestions = suggest_tokens(toks[i]);
+                std::ostringstream oss;
+                oss << "unknown token '" << toks[i] << "' in " << source_name;
                 if (!suggestions.empty()) {
                     oss << ". suggestions:";
                     for (const auto& s : suggestions) oss << ' ' << s;
                 }
                 throw std::runtime_error(oss.str());
             }
-        }
 
+            for (const auto& call : calls) {
+                if (call.builtin) {
+                    const TokenSpec* spec = find_spec(call.token);
+                    if (!spec) {
+                        throw std::runtime_error("unknown token '" + call.token + "'");
+                    }
+
+                    std::vector<std::string> final_args = call.args;
+                    if (final_args.size() < spec->arity) {
+                        for (std::size_t i = final_args.size(); i < spec->arity; ++i) {
+                            final_args.push_back(prompt_for_parameter(call.token, spec->param_names, i));
+                        }
+                    }
+
+                    spec->handler(*this, final_args);
+                } else {
+                    const CustomToken* custom = find_custom(call.token);
+                    if (!custom) {
+                        throw std::runtime_error("unknown token '" + call.token + "'");
+                    }
+
+                    std::vector<std::string> final_args = call.args;
+                    if (final_args.size() < custom->param_names.size()) {
+                        for (std::size_t i = final_args.size(); i < custom->param_names.size(); ++i) {
+                            final_args.push_back(prompt_for_parameter(call.token, custom->param_names, i));
+                        }
+                    }
+
+                    expand_and_execute_custom(*custom, final_args);
+                }
+            }
+        }
         void execute_token(const std::string& tok, const std::vector<std::string>& args) {
             const TokenSpec* spec = find_spec(tok);
             if (!spec) {
