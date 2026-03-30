@@ -1003,7 +1003,6 @@ namespace CEnglish {
 
             custom_[tok.name] = std::move(tok);
             save_user_tokens(default_db_path());
-            std::cout << "Made token: " << tok.name << "\n";
         }
 
         void create_custom_token_from_args(const std::vector<std::string>& args) {
@@ -1035,7 +1034,6 @@ namespace CEnglish {
             }
             custom_[tok.name] = std::move(tok);
             save_user_tokens(default_db_path());
-            std::cout << "Made token: " << tok.name << "\n";
         }
 
         static std::vector<std::string> split_csv(const std::string& s) {
@@ -1476,7 +1474,7 @@ namespace CEnglish {
                 for (const auto& t : tok.definition_tokens) out << t << ' ';
                 out << "\n===END===\n";
             }
-            std::cout << "Saved custom tokens to " << path.string() << "\n";
+            std::cout << "Saved custom token to " << path.string() << "\n";
         }
 
         void load_user_tokens(const fs::path& path) {
