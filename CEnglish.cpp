@@ -1003,7 +1003,7 @@ namespace CEnglish {
 
             custom_[tok.name] = std::move(tok);
             save_user_tokens(default_db_path());
-            std::cout << "Created token: " << tok.name << "\n";
+            std::cout << "Made token: " << tok.name << "\n";
         }
 
         void create_custom_token_from_args(const std::vector<std::string>& args) {
@@ -1035,7 +1035,7 @@ namespace CEnglish {
             }
             custom_[tok.name] = std::move(tok);
             save_user_tokens(default_db_path());
-            std::cout << "Created token: " << tok.name << "\n";
+            std::cout << "Made token: " << tok.name << "\n";
         }
 
         static std::vector<std::string> split_csv(const std::string& s) {
@@ -1085,10 +1085,10 @@ namespace CEnglish {
             std::getline(std::cin, line);
             if (!line.empty() && (line[0] == 'y' || line[0] == 'Y')) {
                 tok.definition_tokens.clear();
-                std::cout << "New definition tokens (end with a single . on a line):\n";
+                std::cout << "New definition tokens (end with a single QED on a line):\n";
                 while (true) {
                     std::getline(std::cin, line);
-                    if (trim(line) == ".") break;
+                    if (trim(line) == "QED") break;
                     auto row = split_ws(line);
                     tok.definition_tokens.insert(tok.definition_tokens.end(), row.begin(), row.end());
                 }
@@ -1391,7 +1391,7 @@ namespace CEnglish {
         }
 
         bool prompt_make_or_skip(const std::string& tok, const std::string& source_name) {
-            std::cout << "Unknown token '" << tok << "' in " << source_name << ". Make it now? (y/n): ";
+            std::cout << "Unknown token '" << tok << "' in " << source_name << ". Define/make token now? (y/n): ";
             std::string line;
             if (!std::getline(std::cin, line)) {
                 return false;
