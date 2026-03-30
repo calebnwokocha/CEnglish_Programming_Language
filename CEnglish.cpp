@@ -253,6 +253,10 @@ namespace CEnglish {
             }
             std::unordered_set<std::string> stack;
             try {
+                if (has_suffix(path.string(), ".ce")) {
+                    load_source_code(path);
+                    return 0;
+                }
                 execute_file(path, stack);
             } catch (const std::exception& e) {
                 std::cerr << "Runtime error: " << e.what() << "\n";
@@ -272,6 +276,49 @@ namespace CEnglish {
 
         static fs::path default_db_path() {
             return fs::path("CEnglish.db");
+        }
+
+        bool has_builtin(const std::string& name) const {
+            return builtins_.find(name) != builtins_.end();
+        }
+
+        bool has_custom(const std::string& name) const {
+            return custom_.find(name) != custom_.end();
+        }
+
+        bool is_variable_name(const std::string& name) const {
+            return vars_.find(name) != vars_.end();
+        }
+
+        bool is_keytoken_name(const std::string& name) const {
+            return has_builtin(name) || has_custom(name);
+        }
+
+        bool is_reserved_name(const std::string& name) const {
+            return is_keytoken_name(name) || is_variable_name(name);
+        }
+
+        void ensure_param_names_valid(const std::vector<std::string>& params, const std::string& token_name) const {
+            std::unordered_set<std::string> seen;
+            for (const auto& p : params) {
+                if (p.empty()) {
+                    throw std::runtime_error("empty parameter name in token: " + token_name);
+                }
+                if (is_keytoken_name(p)) {
+                    throw std::runtime_error("parameter name '" + p + "' conflicts with an existing keytoken");
+                }
+                if (!seen.insert(p).second) {
+                    throw std::runtime_error("duplicate parameter name '" + p + "' in token: " + token_name);
+                }
+            }
+        }
+
+        bool confirm_overwrite(const std::string& name) {
+            if (!is_keytoken_name(name)) return true;
+            std::cout << "Warning: keytoken '" << name << "' already exists. Overwrite it? (y/n): ";
+            std::string line;
+            std::getline(std::cin, line);
+            return !line.empty() && (line[0] == 'y' || line[0] == 'Y');
         }
 
         void register_builtins() {
@@ -297,7 +344,11 @@ namespace CEnglish {
             add(make_builtin("set", Kind::Assign, 2, {"name", "value"},
                 "Stores a value in a variable.",
                 [&](Runtime& rt, const std::vector<std::string>& args) {
-                    rt.vars_[args[0]] = rt.resolve_value(args[1]);
+                    const std::string& name = args[0];
+                    if (rt.is_keytoken_name(name)) {
+                        throw std::runtime_error("variable name conflicts with an existing keytoken: " + name);
+                    }
+                    rt.vars_[name] = rt.resolve_value(args[1]);
                 }));
 
             add(make_builtin("make", Kind::Define, 3, {"name", "params", "body"},
@@ -315,7 +366,7 @@ namespace CEnglish {
             add(make_builtin("modify", Kind::Update, 1, {"name"},
                 "Modifies a custom token.",
                 [&](Runtime& rt, const std::vector<std::string>& args) {
-                    rt.modify_custom_token(args[0]);
+                    rt.modify_token_interactive(args[0]);
                 }));
 
             add(make_builtin("delete", Kind::Delete, 1, {"name"},
@@ -415,7 +466,11 @@ namespace CEnglish {
             add(make_builtin("new", Kind::Define, 1, {"name"},
                 "Creates a variable with empty value.",
                 [&](Runtime& rt, const std::vector<std::string>& args) {
-                    rt.vars_[args[0]] = Value{};
+                    const std::string& name = args[0];
+                    if (rt.is_keytoken_name(name)) {
+                        throw std::runtime_error("variable name conflicts with an existing keytoken: " + name);
+                    }
+                    rt.vars_[name] = Value{};
                 }));
 
             add(make_builtin("want", Kind::Input, 1, {"prompt"},
@@ -814,7 +869,7 @@ namespace CEnglish {
             }
             if (cmd == ":modify") {
                 if (toks.size() < 2) throw std::runtime_error("usage: :modify <token>");
-                modify_custom_token(toks[1]);
+                modify_token_interactive(toks[1]);
                 return;
             }
             if (cmd == ":delete") {
@@ -845,21 +900,28 @@ namespace CEnglish {
         }
 
         void list_tokens() const {
+            std::unordered_set<std::string> uniq;
             std::vector<std::string> names;
             names.reserve(builtins_.size() + custom_.size());
-            for (const auto& [k, _] : builtins_) names.push_back(k);
-            for (const auto& [k, _] : custom_) names.push_back(k);
+            for (const auto& [k, _] : builtins_) {
+                if (uniq.insert(k).second) names.push_back(k);
+            }
+            for (const auto& [k, _] : custom_) {
+                if (uniq.insert(k).second) names.push_back(k);
+            }
             std::sort(names.begin(), names.end());
             for (const auto& n : names) std::cout << n << "\n";
         }
 
         void autocomplete(const std::string& prefix) const {
+            std::unordered_set<std::string> seen;
             std::vector<std::pair<std::size_t, std::string>> hits;
             auto push_hit = [&](const std::string& s) {
-                if (starts_with(s, prefix)) hits.emplace_back(s.size(), s);
+                if (!starts_with(s, prefix)) return;
+                if (seen.insert(s).second) hits.emplace_back(s.size(), s);
             };
-            for (const auto& [k, _] : builtins_) push_hit(k);
             for (const auto& [k, _] : custom_) push_hit(k);
+            for (const auto& [k, _] : builtins_) push_hit(k);
             std::sort(hits.begin(), hits.end(), [](const auto& a, const auto& b) {
                 if (a.first != b.first) return a.first < b.first;
                 return a.second < b.second;
@@ -868,22 +930,27 @@ namespace CEnglish {
         }
 
         void view_token(const std::string& name) const {
-            if (auto it = builtins_.find(name); it != builtins_.end()) {
-                const auto& t = it->second;
+            const auto cit = custom_.find(name);
+            const auto bit = builtins_.find(name);
+
+            if (cit != custom_.end()) {
+                const auto& t = cit->second;
+                std::cout << "[custom] " << t.name;
+                if (bit != builtins_.end()) std::cout << " (overrides builtin)";
+                std::cout << "\n";
+                std::cout << "  params:";
+                for (const auto& p : t.param_names) std::cout << ' ' << p;
+                std::cout << "\n  body: " << join_tokens(t.body_tokens) << "\n";
+                std::cout << "  description: " << t.description << "\n";
+                return;
+            }
+            if (bit != builtins_.end()) {
+                const auto& t = bit->second;
                 std::cout << "[builtin] " << t.name << "\n";
                 std::cout << "  arity: " << t.arity << "\n";
                 std::cout << "  params:";
                 for (const auto& p : t.param_names) std::cout << ' ' << p;
                 std::cout << "\n  description: " << t.description << "\n";
-                return;
-            }
-            if (auto it = custom_.find(name); it != custom_.end()) {
-                const auto& t = it->second;
-                std::cout << "[custom] " << t.name << "\n";
-                std::cout << "  params:";
-                for (const auto& p : t.param_names) std::cout << ' ' << p;
-                std::cout << "\n  body: " << join_tokens(t.body_tokens) << "\n";
-                std::cout << "  description: " << t.description << "\n";
                 return;
             }
             auto suggestions = suggest_tokens(name);
@@ -894,16 +961,29 @@ namespace CEnglish {
             }
         }
 
-        void create_custom_token_interactive() {
+        void create_custom_token_interactive(const std::string& forced_name = {}) {
             CustomToken tok;
-            std::cout << "Name: ";
-            std::getline(std::cin, tok.name);
-            tok.name = trim(tok.name);
+            if (!forced_name.empty()) {
+                tok.name = trim(forced_name);
+                std::cout << "Name: " << tok.name << "\n";
+            } else {
+                std::cout << "Name: ";
+                std::getline(std::cin, tok.name);
+                tok.name = trim(tok.name);
+            }
             if (tok.name.empty()) throw std::runtime_error("empty token name");
+
+            if (!confirm_overwrite(tok.name)) {
+                std::cout << "Skipped token: " << tok.name << "\n";
+                return;
+            }
+
             std::cout << "Parameter names (space-separated, blank for none): ";
             std::string line;
             std::getline(std::cin, line);
             tok.param_names = split_ws(trim(line));
+            ensure_param_names_valid(tok.param_names, tok.name);
+
             std::cout << "Description: ";
             std::getline(std::cin, tok.description);
             std::cout << "Definition tokens (end with only QED on a line):\n";
@@ -913,7 +993,8 @@ namespace CEnglish {
                 auto row = split_ws(line);
                 tok.body_tokens.insert(tok.body_tokens.end(), row.begin(), row.end());
             }
-            custom_[tok.name] = tok;
+
+            custom_[tok.name] = std::move(tok);
             save_user_tokens(default_db_path());
             std::cout << "Created token: " << tok.name << "\n";
         }
@@ -925,10 +1006,15 @@ namespace CEnglish {
             }
             CustomToken tok;
             tok.name = args[0];
+            if (tok.name.empty()) throw std::runtime_error("empty token name");
+            if (!confirm_overwrite(tok.name)) {
+                std::cout << "Skipped token: " << tok.name << "\n";
+                return;
+            }
             if (args.size() >= 2) {
-                // convention: second argument may be a comma-separated param list
                 tok.param_names = split_csv(args[1]);
             }
+            ensure_param_names_valid(tok.param_names, tok.name);
             if (args.size() >= 3) {
                 tok.body_tokens = split_ws(args[2]);
             } else {
@@ -940,7 +1026,7 @@ namespace CEnglish {
                     tok.body_tokens.insert(tok.body_tokens.end(), row.begin(), row.end());
                 }
             }
-            custom_[tok.name] = tok;
+            custom_[tok.name] = std::move(tok);
             save_user_tokens(default_db_path());
             std::cout << "Created token: " << tok.name << "\n";
         }
@@ -960,26 +1046,47 @@ namespace CEnglish {
             return out;
         }
 
-        void modify_custom_token(const std::string& name) {
-            auto it = custom_.find(name);
-            if (it == custom_.end()) throw std::runtime_error("custom token not found: " + name);
+        void modify_token_interactive(const std::string& name) {
+            if (!is_keytoken_name(name)) throw std::runtime_error("token not found: " + name);
+            if (!confirm_overwrite(name)) {
+                std::cout << "Skipped token: " << name << "\n";
+                return;
+            }
+
+            CustomToken tok;
+            if (auto it = custom_.find(name); it != custom_.end()) {
+                tok = it->second;
+            } else {
+                tok.name = name;
+                tok.description.clear();
+                tok.body_tokens.clear();
+            }
+            tok.name = name;
+
             std::cout << "New parameter names (space-separated, blank to keep): ";
             std::string line;
             std::getline(std::cin, line);
             line = trim(line);
-            if (!line.empty()) it->second.param_names = split_ws(line);
+            if (!line.empty()) tok.param_names = split_ws(line);
+            ensure_param_names_valid(tok.param_names, tok.name);
+
+            if (has_builtin(name)) {
+                std::cout << "Modifying builtin token '" << name << "'; the user-defined version will take precedence.\n";
+            }
+
             std::cout << "Replace body? (y/n): ";
             std::getline(std::cin, line);
             if (!line.empty() && (line[0] == 'y' || line[0] == 'Y')) {
-                it->second.body_tokens.clear();
+                tok.body_tokens.clear();
                 std::cout << "New body tokens (end with a single . on a line):\n";
                 while (true) {
                     std::getline(std::cin, line);
                     if (trim(line) == ".") break;
                     auto row = split_ws(line);
-                    it->second.body_tokens.insert(it->second.body_tokens.end(), row.begin(), row.end());
+                    tok.body_tokens.insert(tok.body_tokens.end(), row.begin(), row.end());
                 }
             }
+            custom_[name] = std::move(tok);
             save_user_tokens(default_db_path());
         }
 
@@ -1117,10 +1224,16 @@ namespace CEnglish {
                 const std::string& tok = toks[i];
                 if (tok.empty()) continue;
 
-                const TokenSpec* spec = find_spec(tok);
-                const CustomToken* custom = spec ? nullptr : find_custom(tok);
+                const CustomToken* custom = find_custom(tok);
+                const TokenSpec* spec = custom ? nullptr : find_spec(tok);
 
-                if (!spec && !custom) continue;
+                if (!spec && !custom) {
+                    if (is_variable_name(tok)) continue;
+                    if (prompt_make_or_skip(tok, source_name)) {
+                        consumed[i] = true;
+                    }
+                    continue;
+                }
 
                 PendingCall call;
                 call.token = tok;
@@ -1184,16 +1297,11 @@ namespace CEnglish {
 
             for (std::size_t i = 0; i < toks.size(); ++i) {
                 if (consumed[i]) continue;
-                if (is_keytoken(toks[i])) continue;
-
-                auto suggestions = suggest_tokens(toks[i]);
-                std::ostringstream oss;
-                oss << "unknown token '" << toks[i] << "' in " << source_name;
-                if (!suggestions.empty()) {
-                    oss << ". suggestions:";
-                    for (const auto& s : suggestions) oss << ' ' << s;
+                if (is_keytoken_name(toks[i]) || is_variable_name(toks[i])) continue;
+                if (prompt_make_or_skip(toks[i], source_name)) {
+                    consumed[i] = true;
+                    continue;
                 }
-                throw std::runtime_error(oss.str());
             }
 
             for (const auto& call : calls) {
@@ -1228,22 +1336,17 @@ namespace CEnglish {
                 }
             }
         }
+
         void execute_token(const std::string& tok, const std::vector<std::string>& args) {
+            if (auto it = custom_.find(tok); it != custom_.end()) {
+                expand_and_execute_custom(it->second, args);
+                return;
+            }
             const TokenSpec* spec = find_spec(tok);
             if (!spec) {
-                auto it = custom_.find(tok);
-                if (it != custom_.end()) {
-                    expand_and_execute_custom(it->second, args);
-                    return;
-                }
-                auto suggestions = suggest_tokens(tok);
-                std::ostringstream oss;
-                oss << "unknown token '" << tok << "'";
-                if (!suggestions.empty()) {
-                    oss << ". suggestions:";
-                    for (const auto& s : suggestions) oss << ' ' << s;
-                }
-                throw std::runtime_error(oss.str());
+                if (is_variable_name(tok)) return;
+                if (prompt_make_or_skip(tok, "<direct>")) return;
+                return;
             }
             std::vector<std::string> final_args = args;
             if (final_args.size() < spec->arity) {
@@ -1260,12 +1363,17 @@ namespace CEnglish {
         }
 
         std::vector<std::string> suggest_tokens(const std::string& name) const {
+            std::unordered_set<std::string> seen;
             std::vector<std::pair<long long, std::string>> scored;
             auto score = [&](const std::string& s) {
                 return edit_distance(name, s);
             };
-            for (const auto& [k, _] : builtins_) scored.emplace_back(score(k), k);
-            for (const auto& [k, _] : custom_) scored.emplace_back(score(k), k);
+            for (const auto& [k, _] : custom_) {
+                if (seen.insert(k).second) scored.emplace_back(score(k), k);
+            }
+            for (const auto& [k, _] : builtins_) {
+                if (seen.insert(k).second) scored.emplace_back(score(k), k);
+            }
             std::sort(scored.begin(), scored.end(), [](const auto& a, const auto& b) {
                 if (a.first != b.first) return a.first < b.first;
                 return a.second < b.second;
@@ -1273,6 +1381,20 @@ namespace CEnglish {
             std::vector<std::string> out;
             for (std::size_t i = 0; i < std::min<std::size_t>(5, scored.size()); ++i) out.push_back(scored[i].second);
             return out;
+        }
+
+        bool prompt_make_or_skip(const std::string& tok, const std::string& source_name) {
+            std::cout << "Unknown token '" << tok << "' in " << source_name << ". Make it now? (y/n): ";
+            std::string line;
+            if (!std::getline(std::cin, line)) {
+                return false;
+            }
+            if (!line.empty() && (line[0] == 'y' || line[0] == 'Y')) {
+                create_custom_token_interactive(tok);
+                return true;
+            }
+            std::cout << "Skipped token: " << tok << "\n";
+            return true;
         }
 
         std::string prompt_for_parameter(const std::string& token,
@@ -1309,6 +1431,25 @@ namespace CEnglish {
                 s.replace(pos, from.size(), to);
                 pos += to.size();
             }
+        }
+
+        void save_source_code(const fs::path& path) const {
+            std::ofstream out(path.string(), std::ios::trunc);
+            if (!out) throw std::runtime_error("cannot open source file for writing: " + path.string());
+            for (const auto& [name, tok] : custom_) {
+                out << "===KEYWORD:" << tok.name << "===\n";
+                if (!tok.param_names.empty()) {
+                    out << "===PARAMS:";
+                    for (std::size_t i = 0; i < tok.param_names.size(); ++i) {
+                        if (i) out << ',';
+                        out << tok.param_names[i] << '=';
+                    }
+                    out << "===\n";
+                }
+                for (const auto& t : tok.body_tokens) out << t << ' ';
+                out << "\n===END===\n";
+            }
+            std::cout << "Saved source code to " << path.string() << "\n";
         }
 
         void save_user_tokens(const fs::path& path) const {
@@ -1371,12 +1512,16 @@ namespace CEnglish {
             }
         }
 
-        void load_source_file(const fs::path& path) {
+         void load_source_file(const fs::path& path) {
             if (!fs::exists(path)) throw std::runtime_error("cannot load file: " + path.string());
             std::ifstream in(path.string());
             if (!in) throw std::runtime_error("cannot open file: " + path.string());
             std::string line;
             while (std::getline(in, line)) execute_line(line, path.string());
+        }
+
+        void load_source_code(const fs::path& path) {
+            load_user_tokens(path);
         }
 
         void execute_file(const fs::path& path, std::unordered_set<std::string>& guard) {
