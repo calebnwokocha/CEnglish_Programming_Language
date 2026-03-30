@@ -169,7 +169,7 @@ namespace CEnglish {
     struct CustomToken {
         Word name;
         std::vector<std::string> param_names;
-        std::vector<std::string> body_tokens;
+        std::vector<std::string> definition_tokens;
         std::string description;
     };
 
@@ -351,7 +351,7 @@ namespace CEnglish {
                     rt.vars_[name] = rt.resolve_value(args[1]);
                 }));
 
-            add(make_builtin("make", Kind::Define, 3, {"name", "params", "body"},
+            add(make_builtin("make", Kind::Define, 3, {"name", "params", "definition"},
                 "Creates a user token interactively or from inline parameters.",
                 [&](Runtime& rt, const std::vector<std::string>& args) {
                     rt.create_custom_token_from_args(args);
@@ -427,8 +427,8 @@ namespace CEnglish {
                     if (rt.resolve_value(args[0]).as_bool()) rt.execute_token(args[1], {});
                 }));
 
-            add(make_builtin("while", Kind::Loop, 2, {"condition_token", "body_token"},
-                "Repeatedly executes body while the condition token yields true.",
+            add(make_builtin("while", Kind::Loop, 2, {"condition_token", "definition_token"},
+                "Repeatedly executes definition while the condition token yields true.",
                 [&](Runtime& rt, const std::vector<std::string>& args) {
                     for (std::size_t guard = 0; guard < 1000000; ++guard) {
                         rt.execute_token(args[0], {});
@@ -660,7 +660,7 @@ namespace CEnglish {
                 case Kind::Compare: out = {"a", "b"}; break;
                 case Kind::Conditional: out = (arity == 2 ? std::vector<std::string>{"condition", "then_token"}
                                                            : std::vector<std::string>{"condition", "then_token", "else_token"}); break;
-                case Kind::Loop: out = {"condition_token", "body_token"}; break;
+                case Kind::Loop: out = {"condition_token", "definition_token"}; break;
                 case Kind::Call: out = {"name"}; break;
                 case Kind::IncludeFile: out = {"path"}; break;
                 case Kind::SaveFile: out = {"path"}; break;
@@ -821,13 +821,13 @@ namespace CEnglish {
             return answer;
         }
 
-        void loop_token(const std::string& cond_token, const std::string& body_token) {
+        void loop_token(const std::string& cond_token, const std::string& definition_token) {
             for (std::size_t guard = 0; guard < 1000000; ++guard) {
                 execute_token(cond_token, {});
                 if (stack_.empty()) break;
                 if (!stack_.back().as_bool()) break;
                 stack_.pop_back();
-                execute_token(body_token, {});
+                execute_token(definition_token, {});
             }
         }
 
@@ -848,6 +848,8 @@ namespace CEnglish {
                 const fs::path p(toks[1]);
                 if (p.string() == "CEnglish.db") {
                     load_user_tokens(p);
+                } else if (has_suffix(p.string(), ".ce")) {
+                    load_source_code(p);
                 } else {
                     load_source_file(p);
                 }
@@ -856,6 +858,11 @@ namespace CEnglish {
             if (cmd == ":save") {
                 if (toks.size() < 2) throw std::runtime_error("usage: :save <file>");
                 save_user_tokens(fs::path(toks[1]));
+                return;
+            }
+            if (cmd == ":save_ce") {
+                if (toks.size() < 2) throw std::runtime_error("usage: :save_ce <file.ce>");
+                save_source_code(fs::path(toks[1]));
                 return;
             }
             if (cmd == ":make") {
@@ -893,7 +900,7 @@ namespace CEnglish {
         void print_help() const {
             std::cout
                 << "Meta-commands:\n"
-                << "  :help\n  :list\n  :load <file>\n  :save <file>\n  :make <token>\n"
+                << "  :help\n  :list\n  :load <file>\n  :save <file>\n  :savece <file.ce>\n  :make <token>\n"
                 << "  :view <token>\n  :modify <token>\n  :delete <token>\n"
                 << "  :autocomplete <prefix>\n  :compile <input> <output>\n"
                 << "Language tokens include the 100 common words plus technical primitives.\n";
@@ -940,7 +947,7 @@ namespace CEnglish {
                 std::cout << "\n";
                 std::cout << "  params:";
                 for (const auto& p : t.param_names) std::cout << ' ' << p;
-                std::cout << "\n  body: " << join_tokens(t.body_tokens) << "\n";
+                std::cout << "\n  definition: " << join_tokens(t.definition_tokens) << "\n";
                 std::cout << "  description: " << t.description << "\n";
                 return;
             }
@@ -991,7 +998,7 @@ namespace CEnglish {
                 std::getline(std::cin, line);
                 if (trim(line) == "QED") break;
                 auto row = split_ws(line);
-                tok.body_tokens.insert(tok.body_tokens.end(), row.begin(), row.end());
+                tok.definition_tokens.insert(tok.definition_tokens.end(), row.begin(), row.end());
             }
 
             custom_[tok.name] = std::move(tok);
@@ -1016,14 +1023,14 @@ namespace CEnglish {
             }
             ensure_param_names_valid(tok.param_names, tok.name);
             if (args.size() >= 3) {
-                tok.body_tokens = split_ws(args[2]);
+                tok.definition_tokens = split_ws(args[2]);
             } else {
-                std::cout << "Body tokens for " << tok.name << " (end with a single . on a line):\n";
+                std::cout << "definition tokens for " << tok.name << " (end with a single . on a line):\n";
                 std::string line;
                 while (std::getline(std::cin, line)) {
                     if (trim(line) == ".") break;
                     auto row = split_ws(line);
-                    tok.body_tokens.insert(tok.body_tokens.end(), row.begin(), row.end());
+                    tok.definition_tokens.insert(tok.definition_tokens.end(), row.begin(), row.end());
                 }
             }
             custom_[tok.name] = std::move(tok);
@@ -1059,7 +1066,7 @@ namespace CEnglish {
             } else {
                 tok.name = name;
                 tok.description.clear();
-                tok.body_tokens.clear();
+                tok.definition_tokens.clear();
             }
             tok.name = name;
 
@@ -1074,16 +1081,16 @@ namespace CEnglish {
                 std::cout << "Modifying builtin token '" << name << "'; the user-defined version will take precedence.\n";
             }
 
-            std::cout << "Replace body? (y/n): ";
+            std::cout << "Replace definition? (y/n): ";
             std::getline(std::cin, line);
             if (!line.empty() && (line[0] == 'y' || line[0] == 'Y')) {
-                tok.body_tokens.clear();
-                std::cout << "New body tokens (end with a single . on a line):\n";
+                tok.definition_tokens.clear();
+                std::cout << "New definition tokens (end with a single . on a line):\n";
                 while (true) {
                     std::getline(std::cin, line);
                     if (trim(line) == ".") break;
                     auto row = split_ws(line);
-                    tok.body_tokens.insert(tok.body_tokens.end(), row.begin(), row.end());
+                    tok.definition_tokens.insert(tok.definition_tokens.end(), row.begin(), row.end());
                 }
             }
             custom_[name] = std::move(tok);
@@ -1416,8 +1423,8 @@ namespace CEnglish {
                 binding[name] = (i < args.size() ? args[i] : prompt_for_parameter(tok.name, tok.param_names, i));
             }
             std::vector<std::string> expanded;
-            expanded.reserve(tok.body_tokens.size());
-            for (std::string t : tok.body_tokens) {
+            expanded.reserve(tok.definition_tokens.size());
+            for (std::string t : tok.definition_tokens) {
                 for (const auto& [k, v] : binding) replace_all(t, "{" + k + "}", v);
                 expanded.push_back(std::move(t));
             }
@@ -1446,7 +1453,7 @@ namespace CEnglish {
                     }
                     out << "===\n";
                 }
-                for (const auto& t : tok.body_tokens) out << t << ' ';
+                for (const auto& t : tok.definition_tokens) out << t << ' ';
                 out << "\n===END===\n";
             }
             std::cout << "Saved source code to " << path.string() << "\n";
@@ -1466,7 +1473,7 @@ namespace CEnglish {
                     out << "===\n";
                 }
                 if (!tok.description.empty()) out << "# " << tok.description << "\n";
-                for (const auto& t : tok.body_tokens) out << t << ' ';
+                for (const auto& t : tok.definition_tokens) out << t << ' ';
                 out << "\n===END===\n";
             }
             std::cout << "Saved custom tokens to " << path.string() << "\n";
@@ -1490,9 +1497,9 @@ namespace CEnglish {
                 }
                 if (!in_block) continue;
                 if (line.rfind("===PARAMS:", 0) == 0) {
-                    auto body = line.substr(10, line.size() - 13);
+                    auto definition = line.substr(10, line.size() - 13);
                     current.param_names.clear();
-                    for (auto& item : split_csv(body)) {
+                    for (auto& item : split_csv(definition)) {
                         auto eq = item.find('=');
                         current.param_names.push_back(eq == std::string::npos ? trim(item) : trim(item.substr(0, eq)));
                     }
@@ -1503,12 +1510,15 @@ namespace CEnglish {
                     continue;
                 }
                 if (line == "===END===") {
-                    if (!current.name.empty()) custom_[current.name] = current;
+                    if (!current.name.empty()) {
+                        ensure_param_names_valid(current.param_names, current.name);
+                        custom_[current.name] = current;
+                    }
                     in_block = false;
                     continue;
                 }
                 auto toks = split_ws(line);
-                current.body_tokens.insert(current.body_tokens.end(), toks.begin(), toks.end());
+                current.definition_tokens.insert(current.definition_tokens.end(), toks.begin(), toks.end());
             }
         }
 
