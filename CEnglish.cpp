@@ -1025,10 +1025,10 @@ namespace CEnglish {
             if (args.size() >= 3) {
                 tok.definition_tokens = split_ws(args[2]);
             } else {
-                std::cout << "definition tokens for " << tok.name << " (end with a single . on a line):\n";
+                std::cout << "definition tokens for " << tok.name << " (end with a single QED on a line):\n";
                 std::string line;
                 while (std::getline(std::cin, line)) {
-                    if (trim(line) == ".") break;
+                    if (trim(line) == "QED") break;
                     auto row = split_ws(line);
                     tok.definition_tokens.insert(tok.definition_tokens.end(), row.begin(), row.end());
                 }
