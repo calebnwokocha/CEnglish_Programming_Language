@@ -1,17 +1,4 @@
 // CEnglish.cpp
-// C++17, standard-library only.
-//
-// A practical single-file runtime for a token-based English-keyword language.
-// It provides:
-// - case-sensitive keytokens
-// - built-in token registry seeded from the 100-word common-word list
-// - interactive parameter questioning when arguments are omitted
-// - user-defined token create/view/modify/delete
-// - disk persistence for user-defined tokens
-// - autocomplete suggestions
-// - diagnostics with edit-distance hints
-// - multi-file loading via `use <file>`
-// - a small stack/variable VM for executable semantics
 
 #include <algorithm>
 #include <chrono>
@@ -31,7 +18,7 @@
 #include <variant>
 #include <vector>
 
-namespace fs {
+namespace fs { // File System
     class path {
         public:
             path() = default;
@@ -52,11 +39,11 @@ namespace fs {
     inline path absolute(const path& p) {
         return p;
     }
-} // namespace fs
+}
 
 namespace CEnglish {
 
-    using Word = std::string;
+    using Token = std::string;
     using Source = std::string;
 
     struct Value {
@@ -157,7 +144,7 @@ namespace CEnglish {
     using Handler = std::function<void(Runtime&, const std::vector<std::string>&)>;
 
     struct TokenSpec {
-        Word name;
+        Token name;
         Kind kind{Kind::NoOp};
         std::size_t arity{0};
         std::vector<std::string> param_names;
@@ -167,7 +154,7 @@ namespace CEnglish {
     };
 
     struct CustomToken {
-        Word name;
+        Token name;
         std::vector<std::string> param_names;
         std::vector<std::string> definition_tokens;
         std::string description;
@@ -230,7 +217,6 @@ namespace CEnglish {
         }
 
         void repl() {
-            std::cout << "CEnglish programming language. Type :help for commands.\n";
             std::string line;
             while (true) {
                 std::cout << "> ";
@@ -266,9 +252,9 @@ namespace CEnglish {
         }
 
     private:
-        std::unordered_map<Word, TokenSpec> builtins_;
-        std::unordered_map<Word, CustomToken> custom_;
-        std::unordered_map<Word, Value> vars_;
+        std::unordered_map<Token, TokenSpec> builtins_;
+        std::unordered_map<Token, CustomToken> custom_;
+        std::unordered_map<Token, Value> vars_;
         std::vector<Value> stack_;
         std::vector<Diagnostic> diagnostics_;
         std::vector<fs::path> include_stack_;
@@ -576,8 +562,8 @@ namespace CEnglish {
                     rt.print_help();
                 }));
 
-            // Seed all common words from the attached list as keytokens.
-            // Most map to semantic aliases or no-ops; the registry still treats every word as a valid keytoken.
+            // Seed all common tokens from the attached list as keytokens.
+            // Most map to semantic aliases or no-ops; the registry still treats every token as a valid keytoken.
             const std::vector<std::pair<std::string, Kind>> seed = {
                 {"the", Kind::NoOp}, {"be", Kind::Assign}, {"to", Kind::Call}, {"of", Kind::NoOp},
                 {"and", Kind::Logic}, {"a", Kind::NoOp}, {"in", Kind::NoOp}, {"that", Kind::NoOp},
@@ -612,7 +598,7 @@ namespace CEnglish {
                 spec.name = name;
                 spec.kind = kind;
                 spec.builtin = true;
-                spec.description = "Seeded common-word keytoken.";
+                spec.description = "Seeded common-token keytoken.";
                 spec.arity = default_arity(kind, name);
                 spec.param_names = default_param_names(kind, spec.arity);
                 spec.handler = default_handler_for(kind, name);
@@ -903,7 +889,7 @@ namespace CEnglish {
                 << "  :help\n  :list\n  :load <file>\n  :save <file>\n  :savece <file.ce>\n  :make <token>\n"
                 << "  :view <token>\n  :modify <token>\n  :delete <token>\n"
                 << "  :autocomplete <prefix>\n  :compile <input> <output>\n"
-                << "Language tokens include the 100 common words plus technical primitives.\n";
+                << "CEnglish keywords include the 100 common words in English.\n";
         }
 
         void list_tokens() const {
@@ -961,9 +947,9 @@ namespace CEnglish {
                 return;
             }
             auto suggestions = suggest_tokens(name);
-            std::cout << "Token not found: " << name << "\n";
+            std::cout << name << " not found.\n";
             if (!suggestions.empty()) {
-                std::cout << "Did you mean:\n";
+                std::cout << "Token suggestions:\n";
                 for (const auto& s : suggestions) std::cout << "  " << s << "\n";
             }
         }
@@ -1100,7 +1086,7 @@ namespace CEnglish {
             if (it == custom_.end()) throw std::runtime_error("custom token not found: " + name);
             custom_.erase(it);
             save_user_tokens(default_db_path());
-            std::cout << "Deleted token: " << name << "\n";
+            std::cout << "Deleted " << name << "\n";
         }
 
         void execute_line(const std::string& line, const std::string& source_name) {
@@ -1442,7 +1428,7 @@ namespace CEnglish {
             std::ofstream out(path.string(), std::ios::trunc);
             if (!out) throw std::runtime_error("cannot open source file for writing: " + path.string());
             for (const auto& [name, tok] : custom_) {
-                out << "===KEYWORD:" << tok.name << "===\n";
+                out << "===KEYTOKEN:" << tok.name << "===\n";
                 if (!tok.param_names.empty()) {
                     out << "===PARAMS:";
                     for (std::size_t i = 0; i < tok.param_names.size(); ++i) {
@@ -1461,7 +1447,7 @@ namespace CEnglish {
             std::ofstream out(path.string(), std::ios::trunc);
             if (!out) throw std::runtime_error("cannot open database for writing: " + path.string());
             for (const auto& [name, tok] : custom_) {
-                out << "===KEYWORD:" << tok.name << "===\n";
+                out << "===KEYTOKEN:" << tok.name << "===\n";
                 if (!tok.param_names.empty()) {
                     out << "===PARAMS:";
                     for (std::size_t i = 0; i < tok.param_names.size(); ++i) {
@@ -1487,7 +1473,7 @@ namespace CEnglish {
             bool in_block = false;
             while (std::getline(in, line)) {
                 line = trim(line);
-                if (line.rfind("===KEYWORD:", 0) == 0 && line.size() >= 12) {
+                if (line.rfind("===KEYTOKEN:", 0) == 0 && line.size() >= 12) {
                     current = CustomToken{};
                     in_block = true;
                     current.name = line.substr(11, line.size() - 14);
@@ -1589,9 +1575,9 @@ namespace CEnglish {
             }
             std::cout << "Compiled " << input.string() << " -> " << output.string() << "\n";
         }
-    }; // close class Runtime
+    };
 
-} // close namespace CEnglish
+}
 
 int main(int argc, char** argv) {
     CEnglish::Runtime rt;
